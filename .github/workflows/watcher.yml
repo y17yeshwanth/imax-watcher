@@ -2,7 +2,7 @@ name: AMC Showtime Watcher
 
 on:
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '1,6,11,16,21,26,31,36,41,46,51,56 * * * *'
   workflow_dispatch:
     inputs:
       test:
@@ -31,5 +31,5 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
-          WORKFLOW_FILE: amc-watcher.yml
+          WORKFLOW_FILE: watcher.yml
         run: python3 check_showtimes.py ${{ inputs.test == true && '--test' || '' }}
