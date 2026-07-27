@@ -1,14 +1,16 @@
 name: AMC Showtime Watcher
 
 on:
-  schedule:
-    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       test:
         description: 'Run in test mode (sends ntfy ping using Aug 19 date)'
         type: boolean
         default: false
+
+concurrency:
+  group: amc-watcher
+  cancel-in-progress: false
 
 permissions:
   contents: read
@@ -28,14 +30,24 @@ jobs:
       - run: pip install -r requirements.txt
 
       - name: Check showtimes
+        id: check
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           WORKFLOW_FILE: watcher.yml
           TEST_MODE: ${{ inputs.test }}
+          GITHUB_OUTPUT: ${{ env.GITHUB_OUTPUT }}
         run: |
           if [ "$TEST_MODE" = "true" ]; then
             python3 check_showtimes.py --test
           else
             python3 check_showtimes.py
           fi
+
+      - name: Trigger next check in 5 minutes
+        if: ${{ inputs.test != 'true' && steps.check.outputs.found != 'true' }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          sleep 270
+          gh workflow run watcher.yml --repo ${{ github.repository }}

@@ -10,13 +10,10 @@ How detection works:
 
 Run manually:       python3 check_showtimes.py
 Test detection:     python3 check_showtimes.py --test
-Install cron:       bash setup.sh
-Remove cron:        bash setup.sh --remove
 Re-arm after alert: rm ~/imax-watcher/.notified
 """
 
 import logging
-import subprocess
 import sys
 import os
 import requests
@@ -26,11 +23,10 @@ IN_CI = os.environ.get("GITHUB_ACTIONS") == "true"
 
 # ── Config ────────────────────────────────────────────────────────────────────
 TARGET_DATE     = "2026-08-22"
-KNOWN_GOOD_DATE = "2026-08-19"   # already has showtimes — used by --test
+KNOWN_GOOD_DATE = "2026-08-19"
 THEATRE_SLUG    = "amc-metreon-16"
 MOVIE_SLUG      = "the-odyssey-76238"
 
-# ntfy.sh topic — subscribe to this in the ntfy app on your phone
 NTFY_TOPIC = "ypacha-amc-metreon"
 
 def make_url(date: str) -> str:
@@ -41,9 +37,9 @@ def make_url(date: str) -> str:
 
 TARGET_URL = make_url(TARGET_DATE)
 
-SCRIPT_DIR    = os.path.dirname(os.path.abspath(__file__))
-LOG_FILE      = os.path.join(SCRIPT_DIR, "watcher.log")
-STATE_FILE    = os.path.join(SCRIPT_DIR, ".notified")   # delete to re-arm
+SCRIPT_DIR     = os.path.dirname(os.path.abspath(__file__))
+LOG_FILE       = os.path.join(SCRIPT_DIR, "watcher.log")
+STATE_FILE     = os.path.join(SCRIPT_DIR, ".notified")
 RUN_COUNT_FILE = os.path.join(SCRIPT_DIR, ".run_count")
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -51,7 +47,7 @@ logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s  %(levelname)-7s  %(message)s",
     handlers=[
-        logging.FileHandler(LOG_FILE),
+        logging.FileHandler(LOG_FILE) if not IN_CI else logging.StreamHandler(sys.stdout),
         logging.StreamHandler(sys.stdout),
     ],
 )
@@ -76,19 +72,12 @@ def notify_ntfy(title: str, body: str, url: str) -> None:
     except requests.RequestException as exc:
         log.error("ntfy notification failed: %s", exc)
 
-def disable_workflow() -> None:
-    """Disable this GitHub Actions workflow so it stops running after notifying."""
-    repo     = os.environ.get("GH_REPO", "")
-    workflow = os.environ.get("WORKFLOW_FILE", "amc-watcher.yml")
-    try:
-        subprocess.run(
-            ["gh", "api", "--method", "PUT",
-             f"/repos/{repo}/actions/workflows/{workflow}/disable"],
-            check=True, capture_output=True,
-        )
-        log.info("GitHub Actions workflow disabled — no more checks will run.")
-    except subprocess.CalledProcessError as exc:
-        log.error("Failed to disable workflow: %s", exc.stderr.decode())
+def set_gha_output(key: str, value: str) -> None:
+    """Signal to the workflow that showtimes were found — stops the self-trigger chain."""
+    output_file = os.environ.get("GITHUB_OUTPUT", "")
+    if output_file:
+        with open(output_file, "a") as f:
+            f.write(f"{key}={value}\n")
 
 def alert(dry_run: bool = False) -> None:
     log.info("SHOWTIMES AVAILABLE — firing alert.")
@@ -99,7 +88,7 @@ def alert(dry_run: bool = False) -> None:
             url=TARGET_URL,
         )
         if IN_CI:
-            disable_workflow()
+            set_gha_output("found", "true")
         else:
             with open(STATE_FILE, "w") as f:
                 f.write(datetime.now().isoformat() + "\n")
@@ -119,7 +108,6 @@ HEADERS = {
     "Pragma": "no-cache",
 }
 
-# Minimum page size we'll trust as a real AMC response (bot-block pages are tiny)
 MIN_PAGE_BYTES = 100_000
 
 NO_SHOWTIME_PHRASES = [
@@ -138,23 +126,19 @@ def fetch_html(url: str) -> str | None:
         log.error("Fetch failed: %s", exc)
         return None
 
-
 def check_showtimes(url: str) -> bool:
     html = fetch_html(url)
     if not html:
         return False
-
     if len(html) < MIN_PAGE_BYTES:
-        log.warning("Page too short (%d chars) — likely bot-blocked, skipping.", len(html))
+        log.warning("Page too short (%d chars) — likely bot-blocked.", len(html))
         return False
-
     lower = html.lower()
     for phrase in NO_SHOWTIME_PHRASES:
         if phrase in lower:
-            log.info("No showtimes yet (page contains '%s').", phrase)
+            log.info("No showtimes yet ('%s' found in page).", phrase)
             return False
-
-    log.info("No 'no showtimes' message found in %d-char page — showtimes are live!", len(html))
+    log.info("Showtimes are live! (%d-char page, no 'no showtimes' message)", len(html))
     return True
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -163,24 +147,19 @@ def main() -> None:
 
     if test_mode:
         url = make_url(KNOWN_GOOD_DATE)
-        log.info("TEST MODE: checking %s (should have showtimes)", url)
+        log.info("TEST MODE: checking %s", url)
         if check_showtimes(url):
-            log.info("TEST PASSED — detection works. Sending ntfy notification...")
+            log.info("TEST PASSED — sending ntfy notification...")
             notify_ntfy(
                 title="AMC Watcher test",
-                body="ntfy is working! You'll get a phone ping when Aug 22 showtimes go live.",
+                body="ntfy is working! You'll get a ping when Aug 22 showtimes go live.",
                 url=TARGET_URL,
             )
         else:
-            log.error(
-                "TEST FAILED — Aug 19 page not detected as having showtimes. "
-                "Check your network or whether that date still has showtimes."
-            )
+            log.error("TEST FAILED — Aug 19 showtimes not detected.")
         return
 
-    if IN_CI:
-        log.info("── GitHub Actions run ──────────────────")
-    else:
+    if not IN_CI:
         try:
             count = int(open(RUN_COUNT_FILE).read().strip()) + 1 if os.path.exists(RUN_COUNT_FILE) else 1
         except ValueError:
@@ -188,18 +167,16 @@ def main() -> None:
         with open(RUN_COUNT_FILE, "w") as f:
             f.write(str(count))
         log.info("── Run #%d ─────────────────────────────", count)
-
         if os.path.exists(STATE_FILE):
             log.info("Already notified. Delete %s to re-arm.", STATE_FILE)
             return
 
     log.info("Checking %s", TARGET_URL)
-    available = check_showtimes(TARGET_URL)
-    if available:
+    if check_showtimes(TARGET_URL):
         log.info("Result: AVAILABLE ✓")
         alert()
     else:
-        log.info("Result: not available yet. Next check in ~5 min.")
+        log.info("Result: not available yet.")
 
 if __name__ == "__main__":
     main()
