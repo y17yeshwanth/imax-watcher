@@ -2,17 +2,17 @@ name: AMC Showtime Watcher
 
 on:
   schedule:
-    - cron: '1,6,11,16,21,26,31,36,41,46,51,56 * * * *'
+    - cron: '*/5 * * * *'
   workflow_dispatch:
     inputs:
       test:
-        description: 'Send a test ntfy notification (uses Aug 19 which has showtimes)'
+        description: 'Run in test mode (sends ntfy ping using Aug 19 date)'
         type: boolean
         default: false
 
 permissions:
-  contents: read   # needed for actions/checkout
-  actions: write   # needed to disable this workflow after notifying
+  contents: read
+  actions: write
 
 jobs:
   check:
@@ -32,4 +32,10 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GH_REPO: ${{ github.repository }}
           WORKFLOW_FILE: watcher.yml
-        run: python3 check_showtimes.py ${{ inputs.test == true && '--test' || '' }}
+          TEST_MODE: ${{ inputs.test }}
+        run: |
+          if [ "$TEST_MODE" = "true" ]; then
+            python3 check_showtimes.py --test
+          else
+            python3 check_showtimes.py
+          fi
