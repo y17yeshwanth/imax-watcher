@@ -11,6 +11,7 @@ on:
         default: false
 
 permissions:
+  contents: read   # needed for actions/checkout
   actions: write   # needed to disable this workflow after notifying
 
 jobs:
